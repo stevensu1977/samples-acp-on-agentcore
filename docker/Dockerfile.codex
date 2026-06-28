@@ -1,9 +1,22 @@
-# Codex CLI agent image.
-# Codex CLI speaks ACP natively (`codex acp`), so we just install it and point
-# the bridge at it. Override CODEX_BIN / CODEX_ACP_ARGS at deploy time if your
-# Codex build differs.
-ARG BASE_IMAGE=acp-on-agentcore-base:latest
-FROM ${BASE_IMAGE}
+# Codex CLI agent image (self-contained, linux/arm64 for AgentCore).
+# Codex CLI speaks ACP natively (`codex acp`).
+
+# --- build the bridge ---
+FROM --platform=linux/arm64 node:22-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# --- runtime ---
+FROM --platform=linux/arm64 node:22-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev && npm cache clean --force
+COPY --from=build /app/dist ./dist
 
 # Install Codex CLI globally. Pin a version in CI for reproducibility.
 RUN npm install -g @openai/codex && npm cache clean --force
@@ -12,4 +25,6 @@ ENV AGENT_ID=codex
 ENV CODEX_BIN=codex
 ENV CODEX_ACP_ARGS=acp
 
+ENV PORT=8080
+EXPOSE 8080
 CMD ["node", "dist/server.js"]

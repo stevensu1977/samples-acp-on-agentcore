@@ -5,3 +5,5 @@ dist/
 .DS_Store
 .aws-sam/
 *.tsbuildinfo
+
+deploy/config.env

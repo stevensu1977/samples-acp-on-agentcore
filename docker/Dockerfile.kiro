@@ -1,20 +1,30 @@
-# Kiro CLI agent image.
-# Kiro CLI speaks ACP natively (`kiro-cli acp`). There is no npm package; it
-# ships as a downloadable zip. We install the aarch64 (ARM64) Linux build to
-# match the AgentCore Runtime platform requirement.
-#
-# Build variants are documented at https://kiro.dev/docs/cli/installation/
-# Override KIRO_DOWNLOAD_URL at build time to pin a different version/arch.
-ARG BASE_IMAGE=acp-on-agentcore-base:latest
-FROM ${BASE_IMAGE}
+# Kiro CLI agent image (self-contained, linux/arm64 for AgentCore).
+# Kiro CLI speaks ACP natively (`kiro-cli acp`). No npm package; it ships as a
+# downloadable zip. We install the aarch64 (ARM64) Linux build.
+# Build variants: https://kiro.dev/docs/cli/installation/
+# Override KIRO_DOWNLOAD_URL to pin a different version/arch.
 
-USER root
+# --- build the bridge ---
+FROM --platform=linux/arm64 node:22-bookworm-slim AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# --- runtime ---
+FROM --platform=linux/arm64 node:22-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev && npm cache clean --force
+COPY --from=build /app/dist ./dist
+
 ARG KIRO_DOWNLOAD_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux.zip"
-
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip \
     && curl --proto '=https' --tlsv1.2 -fsSL "${KIRO_DOWNLOAD_URL}" -o /tmp/kirocli.zip \
     && unzip -q /tmp/kirocli.zip -d /tmp/kiro \
-    # Locate the kiro-cli binary inside the archive and put it on PATH.
     && install -m 0755 "$(find /tmp/kiro -type f -name kiro-cli | head -n1)" /usr/local/bin/kiro-cli \
     && rm -rf /tmp/kirocli.zip /tmp/kiro /var/lib/apt/lists/* \
     && kiro-cli --version
@@ -23,4 +33,6 @@ ENV AGENT_ID=kiro
 ENV KIRO_BIN=kiro-cli
 ENV KIRO_ACP_ARGS=acp
 
+ENV PORT=8080
+EXPOSE 8080
 CMD ["node", "dist/server.js"]

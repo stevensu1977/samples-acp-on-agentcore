@@ -57,17 +57,24 @@ iam/
   execution-role-policy.json  ECR pull, logs, Bedrock invoke (for Claude)
   caller-invoke-policy.json   What a caller needs to invoke the runtimes
 deploy/
-  setup-iam.sh        Create/update the shared execution role
-  build-and-push.sh   buildx → ECR (arm64)
-  deploy-runtime.sh   create/update the AgentCore runtime (IAM auth)
-  invoke.sh           SigV4-signed test invocation
+  config.env.template     Copy to config.env; sets AGENT, region, model
+  00_setup_iam.sh         Create/update the shared execution role
+  01_build_and_push.sh    buildx → ECR (arm64)
+  02_deploy_agentcore.sh  create/update the AgentCore runtime (IAM auth)
+  deploy_all.sh           00 → 01 → 02 for one agent
+  invoke.sh               SigV4-signed test invocation
+  cleanup.sh              delete runtime (+ optional ECR/IAM)
 ```
+
+Numbered scripts follow the same convention as the AWS
+[`sample-claude-code-web-agent-on-bedrock-agentcore`](https://github.com/aws-samples/sample-claude-code-web-agent-on-bedrock-agentcore)
+deploy flow (`config.env` + ordered steps).
 
 ## Authorization: IAM / SigV4
 
 This project uses **IAM authorization end to end** — no API keys, no OAuth.
 
-- **Inbound (caller → runtime).** `deploy-runtime.sh` deliberately omits
+- **Inbound (caller → runtime).** `02_deploy_agentcore.sh` deliberately omits
   `--authorizer-configuration` when creating the runtime. Per the AgentCore
   contract, that makes the runtime enforce **SigV4-signed (IAM) requests** by
   default. Unsigned/unauthorized calls get `403 ACCESS_DENIED` *before* they
@@ -114,25 +121,32 @@ curl -N -X POST localhost:8080/invocations \
 ## Deploy (per agent)
 
 ```bash
-export AWS_REGION=us-east-1
-# AWS_ACCOUNT_ID is auto-detected from STS if unset.
+# 0. Configure
+cp deploy/config.env.template deploy/config.env
+# edit deploy/config.env: set AGENT (kiro|codex|claude), AWS_REGION, model.
+# AWS_ACCOUNT_ID auto-detects from STS if left blank.
 
-# 1. One-time: shared execution role
-./deploy/setup-iam.sh
+# One-shot: IAM role -> build/push arm64 image -> create runtime
+./deploy/deploy_all.sh claude
 
-# 2. Build + push the arm64 image to ECR
-./deploy/build-and-push.sh codex
-# Kiro pulls the official aarch64 build automatically; pin a version with:
-#   KIRO_DOWNLOAD_URL=https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux.zip ./deploy/build-and-push.sh kiro
+# ...or run the steps individually (agent arg overrides config.env's AGENT):
+./deploy/00_setup_iam.sh                 # one-time shared execution role
+./deploy/01_build_and_push.sh claude     # buildx arm64 image -> ECR
+./deploy/02_deploy_agentcore.sh claude   # create/update runtime (IAM/SigV4)
 
-# 3. Create/update the AgentCore runtime (IAM/SigV4 auth)
-./deploy/deploy-runtime.sh codex
+# Invoke it (SigV4-signed by your AWS credentials)
+./deploy/invoke.sh claude "Explain what this repo does"
 
-# 4. Invoke it (SigV4-signed by your AWS credentials)
-./deploy/invoke.sh codex "Refactor utils.py to add type hints"
+# Tear down
+./deploy/cleanup.sh claude --ecr
 ```
 
-Repeat steps 2–4 with `kiro` and `claude` to stand up all three runtimes.
+Repeat with `codex` and `kiro` to stand up all three runtimes.
+
+> **Note on building arm64 locally.** AgentCore requires ARM64 images. On an
+> x86_64 host you need `docker buildx` plus QEMU emulation:
+> `docker run --rm --privileged tonistiigi/binfmt --install arm64`. The build
+> script creates a `docker-container` buildx builder automatically.
 
 ## Request / response format
 

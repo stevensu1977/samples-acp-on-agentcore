@@ -9,12 +9,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/common.sh"
 
-AGENT="${1:?usage: invoke.sh <kiro|codex|claude> <prompt>}"
-require_agent "${AGENT}"
-PROMPT="${2:?provide a prompt as the second argument}"
+AGENT="$(resolve_arg_agent "${1:-}")"
+PROMPT="${2:?usage: invoke.sh [agent] <prompt>}"
 RT_NAME="$(runtime_name "${AGENT}")"
 
-ARN="$(aws bedrock-agentcore-control list-agent-runtimes \
+ARN="$(aws bedrock-agentcore-control list-agent-runtimes --region "${AWS_REGION}" \
   --query "agentRuntimes[?agentRuntimeName=='${RT_NAME}'].agentRuntimeArn | [0]" \
   --output text)"
 if [ "${ARN}" = "None" ] || [ -z "${ARN}" ]; then
