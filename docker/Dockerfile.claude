@@ -18,6 +18,28 @@ RUN npm run build
 FROM --platform=linux/arm64 node:22-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
+
+# AWS CLI (aarch64) is the core dependency for the aws-data-analytics skills
+# (they shell out to `aws athena ...`, etc. — DESIGN R9). git is used for
+# session workspaces. uv is only needed for the optional aws-mcp server.
+ARG ENABLE_AWS_MCP=false
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip git ca-certificates \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install \
+    && if [ "$ENABLE_AWS_MCP" = "true" ]; then curl -LsSf https://astral.sh/uv/install.sh | sh \
+         && ln -sf /root/.local/bin/uv /usr/local/bin/uv && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx; fi \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip /var/lib/apt/lists/* \
+    && aws --version
+
+# Pre-install the aws-data-analytics plugin (8 skills + aws-mcp definition).
+ARG AWS_TOOLKIT_REF=main
+RUN git clone --depth 1 --branch "${AWS_TOOLKIT_REF}" \
+      https://github.com/aws/agent-toolkit-for-aws /tmp/toolkit \
+    && mkdir -p /opt/aws-plugins \
+    && cp -r /tmp/toolkit/plugins/aws-data-analytics /opt/aws-plugins/aws-data-analytics \
+    && rm -rf /tmp/toolkit
+ENV AWS_DATA_ANALYTICS_PLUGIN=/opt/aws-plugins/aws-data-analytics
+
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
@@ -29,6 +51,8 @@ ENV CLAUDE_ACP_BIN=claude-agent-acp
 # Route the Claude Agent SDK through Amazon Bedrock so model access is
 # authorized by the AgentCore execution role's IAM permissions (no API key).
 ENV CLAUDE_CODE_USE_BEDROCK=1
+# Enable the aws-data-analytics skills by default (Claude image only).
+ENV ENABLE_AWS_DATA_SKILLS=true
 
 # AgentCore HTTP contract: listen on 0.0.0.0:8080.
 ENV PORT=8080

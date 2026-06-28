@@ -1,0 +1,33 @@
+{
+  "_comment": "Reference template (DESIGN §2.2, method 1). The bridge generates the equivalent policy at runtime from credentials.ts, substituting <USER_ID>/<DATA_BUCKET>. Kept here for review and for use with `aws sts assume-role --policy file://...`. The effective permissions are the INTERSECTION of the execution role and this session policy.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ScopedS3",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::<DATA_BUCKET>",
+        "arn:aws:s3:::<DATA_BUCKET>/users/<USER_ID>/*"
+      ],
+      "Condition": {
+        "StringLike": { "s3:prefix": ["users/<USER_ID>/*", "users/<USER_ID>"] }
+      }
+    },
+    {
+      "Sid": "ReadOnlyCatalogAndAthena",
+      "Effect": "Allow",
+      "Action": [
+        "glue:Get*",
+        "glue:Search*",
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:StopQueryExecution",
+        "athena:GetWorkGroup",
+        "athena:ListWorkGroups"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

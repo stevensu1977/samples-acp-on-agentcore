@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AthenaQuery",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:StopQueryExecution",
+        "athena:GetWorkGroup",
+        "athena:ListWorkGroups",
+        "athena:GetDataCatalog",
+        "athena:ListDataCatalogs"
+      ],
+      "Resource": [
+        "arn:aws:athena:${AWS_REGION}:${AWS_ACCOUNT_ID}:workgroup/${ATHENA_WORKGROUP}",
+        "arn:aws:athena:${AWS_REGION}:${AWS_ACCOUNT_ID}:datacatalog/*"
+      ]
+    },
+    {
+      "Sid": "GlueCatalogRead",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartition",
+        "glue:GetPartitions",
+        "glue:SearchTables",
+        "glue:GetConnection",
+        "glue:GetConnections"
+      ],
+      "Resource": [
+        "arn:aws:glue:${AWS_REGION}:${AWS_ACCOUNT_ID}:catalog",
+        "arn:aws:glue:${AWS_REGION}:${AWS_ACCOUNT_ID}:database/${GLUE_DB_PREFIX}*",
+        "arn:aws:glue:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/${GLUE_DB_PREFIX}*/*",
+        "arn:aws:glue:${AWS_REGION}:${AWS_ACCOUNT_ID}:connection/*"
+      ]
+    },
+    {
+      "Sid": "S3DataAndAthenaResults",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket", "s3:PutObject"],
+      "Resource": [
+        "arn:aws:s3:::${DATA_BUCKET}",
+        "arn:aws:s3:::${DATA_BUCKET}/*",
+        "arn:aws:s3:::${ATHENA_RESULTS_BUCKET}",
+        "arn:aws:s3:::${ATHENA_RESULTS_BUCKET}/*"
+      ]
+    },
+    {
+      "Sid": "S3TablesAndVectors",
+      "Effect": "Allow",
+      "Action": ["s3tables:*", "s3vectors:*"],
+      "Resource": "*",
+      "Condition": { "StringEquals": { "aws:ResourceAccount": "${AWS_ACCOUNT_ID}" } }
+    }
+  ]
+}

@@ -43,6 +43,12 @@ export interface RunPromptOptions {
   onEvent: (event: BridgeEvent) => void;
   /** Abort signal wired to the HTTP request lifecycle. */
   signal?: AbortSignal;
+  /** Adapter `_meta` (e.g. { claudeCode: { options: {...} } }). */
+  meta?: Record<string, unknown>;
+  /** Prior SDK session id to resume (ACP session/load). */
+  resumeSessionId?: string;
+  /** Called with the SDK session id once the session is created. */
+  onSessionId?: (sessionId: string) => void;
 }
 
 /**
@@ -53,6 +59,24 @@ function toAcpStream(proc: ChildProcessWithoutNullStreams) {
   const input = Readable.toWeb(proc.stdout) as ReadableStream<Uint8Array>;
   const output = Writable.toWeb(proc.stdin) as WritableStream<Uint8Array>;
   return ndJsonStream(output, input);
+}
+
+/**
+ * Merge `resume: <sdkSessionId>` into `_meta.claudeCode.options` so the adapter
+ * resumes the prior SDK conversation. Returns a new object; never mutates input.
+ */
+function mergeResume(
+  meta: Record<string, unknown> | undefined,
+  resumeSessionId: string,
+): Record<string, unknown> {
+  const m = (meta ?? {}) as { claudeCode?: { options?: Record<string, unknown> } };
+  return {
+    ...m,
+    claudeCode: {
+      ...m.claudeCode,
+      options: { ...(m.claudeCode?.options ?? {}), resume: resumeSessionId },
+    },
+  };
 }
 
 export class AcpBridge {
@@ -179,10 +203,18 @@ export class AcpBridge {
 
     this.activeSink = opts.onEvent;
     try {
+      // The adapter resumes a prior SDK session when newSession carries the
+      // previous sessionId as `_meta.claudeCode.options.resume`.
+      const meta = opts.resumeSessionId
+        ? mergeResume(opts.meta, opts.resumeSessionId)
+        : opts.meta;
+
       const session = await conn.newSession({
         cwd: opts.cwd,
         mcpServers: [],
+        ...(meta ? { _meta: meta } : {}),
       });
+      opts.onSessionId?.(session.sessionId);
 
       if (opts.signal) {
         opts.signal.addEventListener(
