@@ -1,0 +1,23 @@
+# Shared base: builds the Node/TS ACP<->HTTP bridge once.
+# AgentCore Runtime requires linux/arm64.
+FROM --platform=linux/arm64 node:22-bookworm-slim AS build
+
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# Runtime base image with only production deps + compiled bridge.
+FROM --platform=linux/arm64 node:22-bookworm-slim AS base
+ENV NODE_ENV=production
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --omit=dev && npm cache clean --force
+COPY --from=build /app/dist ./dist
+
+# The AgentCore HTTP contract: listen on 0.0.0.0:8080.
+ENV PORT=8080
+EXPOSE 8080
+CMD ["node", "dist/server.js"]

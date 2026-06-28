@@ -1,0 +1,21 @@
+# Claude Code agent image.
+# Claude Code is NOT ACP-native, so we install the official adapter
+# (@agentclientprotocol/claude-agent-acp), which exposes the Claude Agent SDK
+# as an ACP agent over stdio. The bridge then drives it like any other agent.
+ARG BASE_IMAGE=acp-on-agentcore-base:latest
+FROM ${BASE_IMAGE}
+
+# The adapter bin `claude-agent-acp` is already a dependency of the bridge
+# (see package.json), so it is present in node_modules/.bin. Expose it on PATH.
+ENV PATH="/app/node_modules/.bin:${PATH}"
+
+ENV AGENT_ID=claude
+ENV CLAUDE_ACP_BIN=claude-agent-acp
+
+# The adapter authenticates to the model via Bedrock using the runtime's IAM
+# role. CLAUDE_CODE_USE_BEDROCK=1 routes the Claude Agent SDK through Amazon
+# Bedrock so no API key is needed — the AgentCore execution role's IAM
+# permissions (bedrock:InvokeModel*) authorize model access.
+ENV CLAUDE_CODE_USE_BEDROCK=1
+
+CMD ["node", "dist/server.js"]

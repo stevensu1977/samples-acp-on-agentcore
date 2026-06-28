@@ -1,0 +1,26 @@
+# Kiro CLI agent image.
+# Kiro CLI speaks ACP natively (`kiro-cli acp`). There is no npm package; it
+# ships as a downloadable zip. We install the aarch64 (ARM64) Linux build to
+# match the AgentCore Runtime platform requirement.
+#
+# Build variants are documented at https://kiro.dev/docs/cli/installation/
+# Override KIRO_DOWNLOAD_URL at build time to pin a different version/arch.
+ARG BASE_IMAGE=acp-on-agentcore-base:latest
+FROM ${BASE_IMAGE}
+
+USER root
+ARG KIRO_DOWNLOAD_URL="https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux.zip"
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip \
+    && curl --proto '=https' --tlsv1.2 -fsSL "${KIRO_DOWNLOAD_URL}" -o /tmp/kirocli.zip \
+    && unzip -q /tmp/kirocli.zip -d /tmp/kiro \
+    # Locate the kiro-cli binary inside the archive and put it on PATH.
+    && install -m 0755 "$(find /tmp/kiro -type f -name kiro-cli | head -n1)" /usr/local/bin/kiro-cli \
+    && rm -rf /tmp/kirocli.zip /tmp/kiro /var/lib/apt/lists/* \
+    && kiro-cli --version
+
+ENV AGENT_ID=kiro
+ENV KIRO_BIN=kiro-cli
+ENV KIRO_ACP_ARGS=acp
+
+CMD ["node", "dist/server.js"]

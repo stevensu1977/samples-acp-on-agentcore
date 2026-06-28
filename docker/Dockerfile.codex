@@ -1,0 +1,15 @@
+# Codex CLI agent image.
+# Codex CLI speaks ACP natively (`codex acp`), so we just install it and point
+# the bridge at it. Override CODEX_BIN / CODEX_ACP_ARGS at deploy time if your
+# Codex build differs.
+ARG BASE_IMAGE=acp-on-agentcore-base:latest
+FROM ${BASE_IMAGE}
+
+# Install Codex CLI globally. Pin a version in CI for reproducibility.
+RUN npm install -g @openai/codex && npm cache clean --force
+
+ENV AGENT_ID=codex
+ENV CODEX_BIN=codex
+ENV CODEX_ACP_ARGS=acp
+
+CMD ["node", "dist/server.js"]

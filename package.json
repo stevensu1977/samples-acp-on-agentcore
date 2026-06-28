@@ -1,0 +1,28 @@
+{
+  "name": "acp-on-agentcore",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run ACP agents (Kiro CLI, Codex CLI, Claude Code) on Amazon Bedrock AgentCore Runtime, fronted by a Node/TS HTTP↔ACP bridge with IAM (SigV4) authorization.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "acp-web": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.52.0",
+    "@zed-industries/agent-client-protocol": "^0.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
