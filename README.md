@@ -44,26 +44,33 @@ with its own IAM execution role scoping.
 
 ```
 src/
-  agents.ts     Registry: how to spawn each ACP agent (env-driven)
-  bridge.ts     ACP client: spawns subprocess, drives initialize/session/prompt
-  server.ts     AgentCore HTTP contract: /invocations (SSE) + /ping
+  agents.ts        Registry: how to spawn each ACP agent (env-driven)
+  bridge.ts        ACP client: spawns subprocess, drives initialize/session/prompt
+  server.ts        AgentCore HTTP contract: /invocations (SSE) + /ping; per-turn orchestration
+  config.ts        Central env config (skills / creds / storage flags)
+  skills.ts        Builds the Claude _meta.claudeCode.options (plugins/skills) injection
+  credentials.ts   Per-user scoped creds via sts:AssumeRole + session policy (B layer)
+  sessionstore.ts  Per-user/session workspace layout + optional archive/restore
 docker/
-  Dockerfile.base     Builds the bridge (linux/arm64)
-  Dockerfile.kiro     base + Kiro CLI
-  Dockerfile.codex    base + Codex CLI
-  Dockerfile.claude   base + claude-agent-acp adapter (Bedrock-backed)
+  Dockerfile.kiro     self-contained bridge + Kiro CLI
+  Dockerfile.codex    self-contained bridge + Codex CLI
+  Dockerfile.claude   self-contained bridge + claude-agent-acp + AWS CLI + data-analytics skills
 iam/
-  trust-policy.json           AgentCore assumes the execution role
-  execution-role-policy.json  ECR pull, logs, Bedrock invoke (for Claude)
-  caller-invoke-policy.json   What a caller needs to invoke the runtimes
+  trust-policy.json                    AgentCore assumes the execution role
+  execution-role-policy.json           ECR pull, logs, Bedrock invoke (for Claude)
+  skills-data-analytics-policy.json    Least-privilege Athena/Glue/S3/S3Tables/S3Vectors (A layer)
+  per-user-session-policy.template.json  Per-user STS session policy reference (B layer)
+  caller-invoke-policy.json            What a caller needs to invoke the runtimes
 deploy/
-  config.env.template     Copy to config.env; sets AGENT, region, model
-  00_setup_iam.sh         Create/update the shared execution role
+  config.env.template     Copy to config.env; sets AGENT, region, model, skills/storage flags
+  00_setup_iam.sh         Create/update the shared execution role (+ skills policy)
   01_build_and_push.sh    buildx → ECR (arm64)
-  02_deploy_agentcore.sh  create/update the AgentCore runtime (IAM auth)
+  02_deploy_agentcore.sh  create/update the AgentCore runtime (IAM auth, session storage)
   deploy_all.sh           00 → 01 → 02 for one agent
   invoke.sh               SigV4-signed test invocation
   cleanup.sh              delete runtime (+ optional ECR/IAM)
+docs/
+  DESIGN.md               Skills + IAM + session-persistence design
 ```
 
 Numbered scripts follow the same convention as the AWS
@@ -86,6 +93,51 @@ This project uses **IAM authorization end to end** — no API keys, no OAuth.
 - **Claude → model.** The Claude adapter runs against **Amazon Bedrock**
   (`CLAUDE_CODE_USE_BEDROCK=1`), so model access is authorized by the execution
   role's `bedrock:InvokeModel*` permissions — again, pure IAM.
+
+## AWS data-analytics skills (Claude)
+
+The Claude image bundles the [`aws-data-analytics`](https://github.com/aws/agent-toolkit-for-aws/tree/main/plugins/aws-data-analytics)
+plugin — 8 skills spanning Athena, Glue, S3, S3 Tables, S3 Vectors, and
+OpenSearch. The skills shell out to the **AWS CLI** (baked into the image), so
+no extra MCP server is required by default. The bridge enables them per session
+by injecting `_meta.claudeCode.options` (`plugins` + `skills`) which the adapter
+forwards to the Claude Agent SDK.
+
+- **Permissions (A layer, default).** `iam/skills-data-analytics-policy.json`
+  grants the execution role least-privilege Athena/Glue/S3/S3Tables/S3Vectors.
+  Scope it to your buckets/databases/workgroup via `config.env` placeholders
+  (`DATA_BUCKET`, `ATHENA_WORKGROUP`, `GLUE_DB_PREFIX`, `ATHENA_RESULTS_BUCKET`).
+- **Per-user scoping (B layer, optional).** Set `PER_USER_CREDS=true`. The
+  bridge reads the `X-Amzn-Bedrock-AgentCore-Runtime-User-Id` header and calls
+  `sts:AssumeRole` on the execution role with a runtime-generated **session
+  policy** scoped to `users/<userId>/*` — data access can only narrow, never
+  widen. Falls back to the execution role if assume-role fails.
+- **Optional aws-mcp.** `ENABLE_AWS_MCP=true` adds the `aws-mcp` server (and
+  `uv` to the image) for sandboxed/audited CLI execution. Off by default.
+
+## Session persistence & checkpoints (Claude)
+
+Multi-user sessions use **AgentCore Managed Session Storage** (`ENABLE_SESSION_STORAGE=true`,
+mounted at `/mnt/workspace`). Per turn the bridge resolves a per-user/session
+workspace:
+
+```
+/mnt/workspace/<userId>/<sessionId>/
+  workspace/       Claude's cwd (editable, git-capable)
+  claude-config/   CLAUDE_CONFIG_DIR — conversation .jsonl for session/load resume
+  .acp-meta.json   last SDK session id (drives resume across turns)
+```
+
+- **Checkpoint = invoke again with the same `runtime-session-id`.** Files, `.git`,
+  and installed deps persist across stop/resume; the conversation resumes via
+  ACP `session/load`.
+- ⚠️ Managed session storage is **service-managed and not long-term durable**:
+  it resets after **14 days idle** or on a **runtime version update**, with no
+  customer-accessible backup.
+- **Optional long-term archive.** Set `ARCHIVE_BUCKET=<your-bucket>` to have the
+  bridge `aws s3 sync` each session to your own bucket after every turn and
+  restore from it when managed storage is empty. Off by default. (See
+  `docs/DESIGN.md §3.6`.)
 
 ## Prerequisites
 
