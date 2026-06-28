@@ -22,7 +22,8 @@
 | R5 | 容器内 boto3/CLI 自动通过容器凭据端点取得**执行角色**临时凭据；skill 的 AWS 调用默认即用该身份。 | AgentCore 运行时 |
 | R6 | **AgentCore 原生 Managed Session Storage**：`--filesystem-configurations '[{"sessionStorage":{"mountPath":"/mnt/workspace"}}]'`，挂载点完整 POSIX（read/write/rename/mkdir/symlink/git/npm/pip 均可），同一 `runtime-session-id` resume 时文件原样恢复。**无需 VPC、无需额外 IAM、无需挂载代码。** | [filesystem-configurations 文档](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-filesystem-configurations.html) |
 | R7 | S3 Mountpoint（FUSE）在 AgentCore 托管容器内**不可行**（拿不到 FUSE 特权），且不支持随机写/rename，与 Claude 工作目录不兼容。已被 R6 取代。 | Mountpoint README + R6 |
-| R8 | Managed Session Storage 约束：挂载路径须 `/mnt/` 下恰好一级；**挂载仅在 invoke 时可用，初始化阶段不可用**；14 天闲置过期、版本更新重置；每 runtime 最多 1 个 sessionStorage、5 个挂载总数。 | filesystem 文档 |
+| R8 | Managed Session Storage 约束：挂载路径须 `/mnt/` 下恰好一级；**挂载仅在 invoke 时可用，初始化阶段不可用**；14 天闲置过期、版本更新重置；每 runtime 最多 1 个 sessionStorage、5 个挂载总数。**它是 AgentCore 服务托管的存储（存于 AgentCore 自有 S3 `acr-storage-*`，客户不可直接访问）；一旦因闲置/版本更新被重置，数据无法恢复、无客户可访问的备份。** | filesystem 文档 |
+| R9 | skill 主要通过 **AWS CLI** 调用（如 `aws athena start-query-execution`、`aws sts get-caller-identity`），不用 boto3 脚本。`aws-mcp` 是**可选**封装（其工具 `aws___call_aws(command="aws ...")` 本质就是把同样的 CLI 命令包一层做沙箱/审计/成本追踪）；SKILL.md 明确"MCP 不可用时同样的 CLI 命令直接可用"，且 `.claude-plugin/plugin.json` **未声明任何 mcpServers**。 | 实测 `querying-data-lake/SKILL.md` + `plugin.json` |
 
 > R8 的"挂载仅在 invoke 时可用"是硬约束：bridge **不能**在容器启动（warm start）时就把工作目录定位到 `/mnt/workspace`，必须在收到 `/invocations` 时再创建/定位会话目录。
 
@@ -37,11 +38,13 @@
 ### 1.2 镜像改动（`docker/Dockerfile.claude`）
 
 ```dockerfile
-# 1) 安装 uv（aws-mcp MCP server 依赖）与 python 运行时
-RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv curl git ca-certificates \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && ln -s /root/.local/bin/uv /usr/local/bin/uv \
-    && rm -rf /var/lib/apt/lists/*
+# 1) 安装 AWS CLI（skill 的核心依赖，R9）+ git。
+#    uv/python 仅在开启可选 aws-mcp 时需要 —— 默认 MVP 不装。
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip git ca-certificates \
+    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip /var/lib/apt/lists/* \
+    && aws --version
 
 # 2) 预装插件到固定路径
 ARG AWS_TOOLKIT_REF=main
@@ -54,7 +57,8 @@ RUN git clone --depth 1 --branch "${AWS_TOOLKIT_REF}" \
 ENV AWS_DATA_ANALYTICS_PLUGIN=/opt/aws-plugins/aws-data-analytics
 ```
 
-> 注：插件目录形态（是否为标准 Claude Code plugin manifest）需在实现阶段核对；若顶层不是 `.claude-plugin/`，则改为把 `skills/` 目录软链到 `~/.claude/skills/` 或用 `additionalDirectories` 暴露。**这是实现期需验证的一个开放点（见 §5）。**
+> 插件含标准 `.claude-plugin/plugin.json`（已实测），故用 `plugins:[{type:'local',path}]` 注册即可。
+> **aws-mcp 为可选**（`ENABLE_AWS_MCP=true` 时才在镜像里加装 `uv` 并注入该 MCP server）；默认仅靠 AWS CLI，skill 即可工作（R9）。
 
 ### 1.3 bridge 注入（`src/bridge.ts` 的 `newSession`）
 
@@ -72,9 +76,8 @@ const session = await conn.newSession({
           ? [{ type: "local", path: process.env.AWS_DATA_ANALYTICS_PLUGIN }]
           : [],
         skills: skillScope,            // 'all' | string[]（见 config）
-        mcpServers: {
-          "aws-mcp": { command: "uvx", args: ["aws-mcp"] }, // 具体启动命令实现期核对
-        },
+        // aws-mcp 可选：仅当 ENABLE_AWS_MCP=true 才注入；否则 skill 走 AWS CLI（R9）
+        ...(enableAwsMcp ? { mcpServers: { "aws-mcp": { command: "uvx", args: ["aws-mcp"] } } } : {}),
         additionalDirectories: [process.env.AWS_DATA_ANALYTICS_PLUGIN],
       },
     },
@@ -89,6 +92,7 @@ const session = await conn.newSession({
 | `ENABLE_AWS_DATA_SKILLS` | `true`（claude 镜像内） | 是否注入插件 |
 | `SKILL_SCOPE` | `all` | `all` 或逗号分隔白名单（如 `querying-data-lake,exploring-data-catalog`） |
 | `AWS_DATA_ANALYTICS_PLUGIN` | `/opt/aws-plugins/aws-data-analytics` | 插件路径 |
+| `ENABLE_AWS_MCP` | `false` | 是否注入可选 aws-mcp（需镜像装 uv）；默认仅用 AWS CLI |
 
 本需求确认：**启用全部 8 个**（`SKILL_SCOPE=all`）。白名单能力保留以便将来收窄。
 
@@ -157,21 +161,25 @@ const session = await conn.newSession({
 
 ### 2.2 B 层：每用户 scoped 临时凭据（可选开关）
 
-`config.env` 设 `PER_USER_CREDS=true` 时启用。多租户必需，防止 prompt 注入越界到他人数据。
+**已定：采用方式一 —— 同一执行角色 + STS session policy 动态收窄**（零预建，加新用户无需任何 IAM 操作；权限 = 执行角色 ∩ session policy 的交集）。不采用"每租户独立角色"（强边界但需预建 N 个角色、受账号角色数上限约束）；待出现强合规/审计或 per-tenant 差异化权限需求时再升级，B 层接口设计为可切换以免返工。
 
-机制（bridge 在 spawn/驱动 skill 前）：
+`config.env` 设 `PER_USER_CREDS=true` 时启用。多租户场景用于防止 prompt 注入越界到他人数据。
+
+机制（bridge 在驱动 skill 前）：
 
 1. 从 HTTP 头读 `X-Amzn-Bedrock-AgentCore-Runtime-User-Id`（调用方经 `--runtime-user-id` 传入）。
-2. 用执行角色调用 `sts:AssumeRole`（目标可为同一角色或专用 per-tenant 角色），附加 **session policy** 把权限收窄到该用户：
+2. bridge 用执行角色凭据调用 `sts:AssumeRole`（目标=**同一执行角色**），附加运行时生成的 **session policy**（按 `userId` 拼前缀）把权限收窄：
    - `s3:prefix` / 对象 ARN 锁到 `users/<userId>/*`；
-   - Athena workgroup 限定到 `wg-<userId>` 或共享只读 workgroup；
+   - Athena workgroup 限定到共享只读 workgroup（或 `wg-<userId>`）；
    - Glue 只读。
 3. 把派生出的 `AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN` 通过 `_meta.claudeCode.options.env` 注入 SDK 子进程（R2 确认 `env` 会与 `process.env` 合并）。
 4. 凭据随 turn 生命周期，过期即弃。
 
+> 执行角色信任策略需允许自我 AssumeRole（`Principal` 含角色自身 ARN），且执行角色需有 `sts:AssumeRole` 权限。
+
 关闭时（默认）：不 AssumeRole，skill 直接用执行角色（A 层）。
 
-新增脚本 `deploy/setup-per-user-role.sh`（可选）：创建 per-tenant 角色与信任关系；`iam/per-user-session-policy.template.json` 提供 session policy 模板。
+新增 `iam/per-user-session-policy.template.json` 提供 session policy 模板（按 `userId` 渲染）。
 
 ---
 
@@ -227,9 +235,35 @@ turn 结束：把本次 sdkSessionId 写回 .acp-meta.json
 
 若 skill 要查询大体积共享数据集，可叠加 **S3 Files 访问点**（`/mnt/datasets`，只读）。需 `networkMode=VPC` + 子网/SG/access-point + 执行角色 `s3files:ClientMount/GetAccessPoint`。本期不实现，列为后续；会单独提供 VPC/SG/access-point 脚本。
 
-### 3.5 生命周期注意
+### 3.5 生命周期注意（重要）
 
-- **14 天闲置过期** + **版本更新重置**（R8）：Managed Session Storage 非永久。若需长期留存产物，turn 结束时额外 `aws s3 cp` 关键产物到独立 S3 桶（可选 `ARCHIVE_BUCKET`），或叠加 S3 Files/EFS。文档会写明。
+- Managed Session Storage 是 **AgentCore 服务托管存储**（存于 AgentCore 自有 S3，客户不可直接访问，R8）。
+- **一旦因 14 天闲置过期或 runtime 版本更新被重置，数据无法恢复，无客户可访问的备份**（R8）。它是"会话级临时持久化"，**不是长期归档**。
+- 日常 stop/resume 续接由它无缝处理，无需我们做任何同步。
+
+### 3.6 可选长期归档（ARCHIVE_BUCKET，默认关闭）
+
+仅当确有"产出需留存超过 14 天"或"会频繁更新镜像导致存储被重置"的需求时启用。它是**你自己账号里的独立 S3 桶**，与 §3.5 的托管存储是两套东西。
+
+`config.env` 设 `ARCHIVE_BUCKET=my-bucket` 时，bridge 增加两段逻辑：
+
+```
+turn 结束（归档）：
+  aws s3 sync /mnt/workspace/<userId>/<sessionId>/  s3://${ARCHIVE_BUCKET}/<userId>/<sessionId>/
+  （含 workspace/ 与 claude-config/ 的 jsonl）
+
+/invocations 开始时（恢复）：
+  若 /mnt/workspace/<userId>/<sessionId>/ 为空（被重置）但归档存在：
+    aws s3 sync s3://${ARCHIVE_BUCKET}/<userId>/<sessionId>/  /mnt/workspace/<userId>/<sessionId>/
+    → 重建工作目录后照常 session/load 续接
+```
+
+权衡与限制（务必知晓）：
+- **能加载回来，但要靠 bridge 自己实现归档/恢复**，不是 AgentCore 自动的（本质是我们用你的 S3 桶补了一层长期持久化）。
+- 文件（代码、`.git`、数据）能完整恢复；对话 jsonl 同样归档，跨长时间/跨镜像版本的 `session/load` 续接存兼容风险，稳妥按"恢复工作目录，对话可重新开始但能看到历史文件"对待。
+- 每个 turn 多一次 S3 同步的延迟与成本。
+- 执行角色需对 `ARCHIVE_BUCKET` 有 `s3:GetObject/PutObject/ListBucket/DeleteObject`。
+- 替代方案：叠加 BYO 的 S3 Files/EFS（永久、需 VPC，见 §3.4）。
 
 ---
 
@@ -237,26 +271,27 @@ turn 结束：把本次 sdkSessionId 写回 .acp-meta.json
 
 | 文件 | 改动 |
 |---|---|
-| `docker/Dockerfile.claude` | 装 `uv`+python+git；clone 插件到 `/opt/aws-plugins`；设相关 ENV |
+| `docker/Dockerfile.claude` | 装 **AWS CLI**(aarch64)+git；clone 插件到 `/opt/aws-plugins`；设相关 ENV（uv 仅在 `ENABLE_AWS_MCP` 时装） |
 | `src/server.ts` | 读 `X-Amzn-...-Runtime-User-Id` 头并下传；会话目录定位推迟到 `/invocations` |
-| `src/bridge.ts` | `newSession` 注入 `_meta.claudeCode.options`（plugins/skills/mcpServers/additionalDirectories/env）；per-user cwd & `CLAUDE_CONFIG_DIR`；读写 `.acp-meta.json` 实现 `session/load` 续接；B 层 STS 派生凭据 |
-| `src/agents.ts` / `config.env.template` | 新增 `ENABLE_AWS_DATA_SKILLS`/`SKILL_SCOPE`/`PER_USER_CREDS`/`ENABLE_SESSION_STORAGE`/`SESSION_STORAGE_MOUNT` 等 |
-| `deploy/02_deploy_agentcore.sh` | 增 `--filesystem-configurations`（sessionStorage）；附加 skills IAM policy |
-| `deploy/00_setup_iam.sh` | 附加 `iam/skills-data-analytics-policy.json` |
+| `src/bridge.ts` | `newSession` 注入 `_meta.claudeCode.options`（plugins/skills/可选 mcpServers/additionalDirectories/env）；per-user cwd & `CLAUDE_CONFIG_DIR`；读写 `.acp-meta.json` 实现 `session/load` 续接；B 层 STS 派生凭据；可选 ARCHIVE 归档/恢复 |
+| `src/agents.ts` / `config.env.template` | 新增 `ENABLE_AWS_DATA_SKILLS`/`SKILL_SCOPE`/`ENABLE_AWS_MCP`/`PER_USER_CREDS`/`ENABLE_SESSION_STORAGE`/`SESSION_STORAGE_MOUNT`/`ARCHIVE_BUCKET` 等 |
+| `deploy/02_deploy_agentcore.sh` | 增 `--filesystem-configurations`（sessionStorage） |
+| `deploy/00_setup_iam.sh` | 附加 `iam/skills-data-analytics-policy.json`；（可选）渲染 ARCHIVE_BUCKET 权限 |
 | `iam/skills-data-analytics-policy.json` | 新增（A 层） |
 | `iam/per-user-session-policy.template.json` | 新增（B 层，可选） |
-| `deploy/setup-per-user-role.sh` | 新增（B 层，可选） |
 | `README.md` / 本文 | 文档同步 |
 
 ---
 
-## 5. 开放问题（评审需拍板）
+## 5. 评审决议（已拍板）
 
-1. **插件目录形态**：`aws-data-analytics` 是否为标准 Claude Code plugin（顶层 `.claude-plugin/plugin.json`）？决定用 `plugins:[{type:'local'}]` 还是软链 `~/.claude/skills/`。实现首步先核对真实目录结构。
-2. **aws-mcp 启动命令**：`uvx aws-mcp` 还是插件内带 manifest 自动注册？需核对插件 README/源码。
-3. **会话目录键**：用 `runtime-session-id` 作为 `<sessionId>`（AgentCore 已据此隔离存储）是否足够？是否需要额外把 `userId` 纳入路径（多用户共用同一 session-id 的概率极低，但纳入更稳）。建议纳入。
-4. **B 层目标角色**：per-user 用"同角色 + session policy"够不够，还是必须独立 per-tenant 角色？取决于审计/边界要求。
-5. **归档策略**：是否需要 `ARCHIVE_BUCKET` 应对 14 天过期/版本重置？
+1. **插件目录形态** ✅ 已实测含标准 `.claude-plugin/plugin.json` → 用 `plugins:[{type:'local',path}]` 注册。
+2. **aws-mcp** ✅ skill 主用 AWS CLI（R9），aws-mcp 降级为可选（`ENABLE_AWS_MCP`，默认关）。镜像默认只装 AWS CLI。
+3. **会话目录键** ✅ 纳入 `userId`：`/mnt/workspace/<userId>/<sessionId>/`。
+4. **B 层目标角色** ✅ 方式一：同执行角色 + STS session policy 动态收窄（零预建）；接口可切换以便将来升级到 per-tenant 角色。
+5. **归档策略** ✅ `ARCHIVE_BUCKET` 默认关闭、做成可选开关（§3.6）；并在 §3.5 写明原生托管存储被重置后不可恢复。
+
+> 实现期仅剩待核对项：插件内 skill 目录名与 `SKILL.md` 的 `name` 字段（用于 `SKILL_SCOPE` 白名单）、aws-mcp 的确切启动命令（仅在开启时需要）。
 
 ---
 
