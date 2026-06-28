@@ -28,6 +28,8 @@ SESSION_ID="${SESSION_ID:0:64}"
 OUT="$(mktemp /tmp/acp-resp-XXXXXX.sse)"
 log "Invoking ${ARN}"
 aws bedrock-agentcore invoke-agent-runtime \
+  --region "${AWS_REGION}" \
+  --cli-binary-format raw-in-base64-out \
   --agent-runtime-arn "${ARN}" \
   --runtime-session-id "${SESSION_ID}" \
   --content-type "application/json" \
