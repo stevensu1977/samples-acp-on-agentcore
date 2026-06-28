@@ -41,6 +41,26 @@
       ]
     },
     {
+      "Sid": "GlueDiscoveryAndCatalogMgmt",
+      "Effect": "Allow",
+      "Action": [
+        "glue:SearchAssets",
+        "glue:GetAsset",
+        "glue:GetAssetType",
+        "glue:ListIterableForms",
+        "glue:BatchGetIterableForms",
+        "glue:GetCatalog",
+        "glue:GetCatalogs",
+        "glue:CreateDatabase",
+        "glue:CreateTable",
+        "glue:UpdateTable",
+        "glue:DeleteTable",
+        "glue:DeleteDatabase"
+      ],
+      "Resource": "*",
+      "Condition": { "StringEquals": { "aws:ResourceAccount": "${AWS_ACCOUNT_ID}" } }
+    },
+    {
       "Sid": "S3DataAndAthenaResults",
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:ListBucket", "s3:PutObject"],
