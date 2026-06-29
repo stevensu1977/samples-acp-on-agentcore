@@ -1,5 +1,7 @@
 # Example: multi-user concurrency / isolation test
 
+**English** | [简体中文](README.zh-CN.md)
+
 Proves that concurrent users with **distinct session ids** are fully isolated
 on the deployed Claude runtime — no shared filesystem, no SSE cross-talk.
 

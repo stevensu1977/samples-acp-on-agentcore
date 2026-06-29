@@ -1,5 +1,7 @@
 # Example: Glue semantic search via aws-data-analytics skills
 
+**English** | [简体中文](README.zh-CN.md)
+
 This example shows the deployed **Claude on AgentCore** runtime answering
 natural-language data-discovery questions about an AWS Glue Data Catalog —
 driven entirely by the bundled [`aws-data-analytics`](https://github.com/aws/agent-toolkit-for-aws/tree/main/plugins/aws-data-analytics)
