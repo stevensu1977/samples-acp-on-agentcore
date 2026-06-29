@@ -1,5 +1,7 @@
 # ACP on AgentCore
 
+**English** | [简体中文](README.zh-CN.md)
+
 Run [Agent Client Protocol (ACP)](https://agentclientprotocol.com) agents on
 **Amazon Bedrock AgentCore Runtime**, fronted by a small Node/TypeScript
 **ACP-WEB bridge** and authorized with **IAM (SigV4)**.
